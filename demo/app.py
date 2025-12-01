@@ -19,32 +19,34 @@ pipe_inpaint = StableDiffusionInpaintPipeline.from_pretrained(
 )
 pipe_inpaint = pipe_inpaint.to("cuda")
 
-## Good params for editing that we used all over the paper --> decent quality and speed   
+## Good params for editing that we used all over the paper --> decent quality and speed
 GUIDANCE_SCALE = 7.5
 NUM_INFERENCE_STEPS = 100
 DEFAULT_SEED = 1234
 
+
 def pgd(X, targets, model, criterion, eps=0.1, step_size=0.015, iters=40, clamp_min=0, clamp_max=1, mask=None):
-    X_adv = X.clone().detach() + (torch.rand(*X.shape)*2*eps-eps).cuda()
+    X_adv = X.clone().detach() + (torch.rand(*X.shape) * 2 * eps - eps).cuda()
     pbar = tqdm(range(iters))
     for i in pbar:
-        actual_step_size = step_size - (step_size - step_size / 100) / iters * i  
+        actual_step_size = step_size - (step_size - step_size / 100) / iters * i
         X_adv.requires_grad_(True)
 
         loss = (model(X_adv).latent_dist.mean - targets).norm()
         pbar.set_description(f"Loss {loss.item():.5f} | step size: {actual_step_size:.4}")
 
         grad, = torch.autograd.grad(loss, [X_adv])
-        
+
         X_adv = X_adv - grad.detach().sign() * actual_step_size
         X_adv = torch.minimum(torch.maximum(X_adv, X - eps), X + eps)
         X_adv.data = torch.clamp(X_adv, min=clamp_min, max=clamp_max)
-        X_adv.grad = None    
-        
+        X_adv.grad = None
+
         if mask is not None:
             X_adv.data *= mask
-            
+
     return X_adv
+
 
 def get_target():
     target_url = 'https://www.rtings.com/images/test-materials/2015/204_Gray_Uniformity.png'
@@ -52,6 +54,7 @@ def get_target():
     target_image = Image.open(BytesIO(response.content)).convert("RGB")
     target_image = target_image.resize((512, 512))
     return target_image
+
 
 def immunize_fn(init_image, mask_image):
     with torch.autocast('cuda'):
@@ -61,94 +64,50 @@ def immunize_fn(init_image, mask_image):
 
         targets = pipe_inpaint.vae.encode(preprocess(get_target()).half().cuda()).latent_dist.mean
 
-        adv_X = pgd(X, 
-                    targets = targets,
-                    model=pipe_inpaint.vae.encode, 
-                    criterion=torch.nn.MSELoss(), 
-                    clamp_min=-1, 
+        adv_X = pgd(X,
+                    targets=targets,
+                    model=pipe_inpaint.vae.encode,
+                    criterion=torch.nn.MSELoss(),
+                    clamp_min=-1,
                     clamp_max=1,
-                    eps=0.12, 
-                    step_size=0.01, 
+                    eps=0.12,
+                    step_size=0.01,
                     iters=200,
-                    mask=1-mask
-                   )
+                    mask=1 - mask
+                    )
 
         adv_X = (adv_X / 2 + 0.5).clamp(0, 1)
-        
+
         adv_image = topil(adv_X[0]).convert("RGB")
         adv_image = recover_image(adv_image, init_image, mask_image, background=True)
-        return adv_image        
+        return adv_image
+
 
 def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False):
-    import numpy as np
-    from PIL import Image
-
-    # Normalize various possible `gr.ImageMask` return types into PIL images
-    img_input = image
-    img_arr = None
-    mask_arr = None
-
-    # Early checks for missing/empty input: return empty gallery result instead of raising
-    if img_input is None or (isinstance(img_input, str) and img_input.strip() == ""):
-        print("run(): no image provided")
-        return []  # empty gallery
-
-    if isinstance(img_input, dict):
-        img_arr = img_input.get('image')
-        mask_arr = img_input.get('mask')
-    elif isinstance(img_input, (list, tuple)):
-        if len(img_input) >= 2:
-            img_arr, mask_arr = img_input[0], img_input[1]
-        elif len(img_input) == 1:
-            img_arr = img_input[0]
-    else:
-        img_arr = img_input
-
-    # Convert image part to PIL
-    if isinstance(img_arr, Image.Image):
-        init_image = img_arr
-    elif isinstance(img_arr, np.ndarray):
-        init_image = Image.fromarray(img_arr)
-    elif img_arr is None:
-        print("run(): image part is None")
-        return []
-    else:
-        # fallback for other array-like inputs
-        init_image = Image.fromarray(np.array(img_arr))
-
-    # Convert mask part to PIL (provide a default full-white mask if missing)
-    if isinstance(mask_arr, Image.Image):
-        mask_image = mask_arr
-    elif isinstance(mask_arr, np.ndarray):
-        mask_image = Image.fromarray(mask_arr)
-    elif mask_arr is None:
-        mask_image = Image.new("RGB", init_image.size, color=(255, 255, 255))
-    else:
-        mask_image = Image.fromarray(np.array(mask_arr))
-
-    # rest of original logic
     if seed == '':
         seed = DEFAULT_SEED
     else:
         seed = int(seed)
     torch.manual_seed(seed)
 
-    init_image = resize_and_crop(init_image, (512,512))
-    mask_image = ImageOps.invert(mask_image.convert('RGB'))
+    print("Image is", image)
+    init_image = Image.fromarray(image['image'])
+    init_image = resize_and_crop(init_image, (512, 512))
+    mask_image = ImageOps.invert(Image.fromarray(image['mask']).convert('RGB'))
     mask_image = resize_and_crop(mask_image, init_image.size)
 
     if immunize:
         immunized_image = immunize_fn(init_image, mask_image)
 
     image_edited = pipe_inpaint(prompt=prompt,
-                         image=init_image if not immunize else immunized_image,
-                         mask_image=mask_image,
-                         height = init_image.size[0],
-                         width = init_image.size[1],
-                         eta=1,
-                         guidance_scale=guidance_scale,
-                         num_inference_steps=num_inference_steps,
-                        ).images[0]
+                                image=init_image if not immunize else immunized_image,
+                                mask_image=mask_image,
+                                height=init_image.size[0],
+                                width=init_image.size[1],
+                                eta=1,
+                                guidance_scale=guidance_scale,
+                                num_inference_steps=num_inference_steps,
+                                ).images[0]
 
     image_edited = recover_image(image_edited, init_image, mask_image)
 
@@ -156,7 +115,9 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
         return [(immunized_image, 'Immunized Image'), (image_edited, 'Edited After Immunization')]
     else:
         return [(image_edited, 'Edited Image (Without Immunization)')]
-description='''<u>Official</u> demo of our paper: <br>
+
+
+description = '''<u>Official</u> demo of our paper: <br>
 **Raising the Cost of Malicious AI-Powered Image Editing** <br>
 *[Hadi Salman](https://twitter.com/hadisalmanX), [Alaa Khaddaj](https://twitter.com/Alaa_Khaddaj), [Guillaume Leclerc](https://twitter.com/gpoleclerc), [Andrew Ilyas](https://twitter.com/andrew_ilyas), [Aleksander Madry](https://twitter.com/aleks_madry)* <br>
 MIT &nbsp;&nbsp;[Paper](https://arxiv.org/abs/2302.06588) 
@@ -170,11 +131,10 @@ Below you can test our (encoder attack) immunization method for making images re
 '''
 
 examples_list = [
-                    ['./images/hadi_and_trevor.jpg', 'man attending a wedding', '329357', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
-                    ['./images/trevor_2.jpg', 'two men in prison', '329357', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
-                    ['./images/elon_2.jpg', 'man in a metro station', '214213', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
-                ]
-
+    ['./images/hadi_and_trevor.jpg', 'man attending a wedding', '329357', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
+    ['./images/trevor_2.jpg', 'two men in prison', '329357', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
+    ['./images/elon_2.jpg', 'man in a metro station', '214213', GUIDANCE_SCALE, NUM_INFERENCE_STEPS],
+]
 
 with gr.Blocks() as demo:
     gr.HTML(value="""<h1 style="font-weight: 900; margin-bottom: 7px; margin-top: 5px;">
@@ -202,20 +162,23 @@ with gr.Blocks() as demo:
             </iframe>
             </center>
         '''
-        )
+                )
 
-    with gr.Row():  
+    with gr.Row():
         with gr.Column():
             imgmask = gr.ImageMask(label='Drawing tool to mask regions you want to keep, e.g. faces')
             prompt = gr.Textbox(label='Prompt', placeholder='A photo of a man in a wedding')
             seed = gr.Textbox(label='Seed (Change to get different edits)', placeholder=str(DEFAULT_SEED), visible=True)
             with gr.Accordion("Advanced Options", open=False):
                 scale = gr.Slider(label="Guidance Scale", minimum=0.1, maximum=25.0, value=GUIDANCE_SCALE, step=0.1)
-                num_steps = gr.Slider(label="Number of Inference Steps", minimum=10, maximum=250, value=NUM_INFERENCE_STEPS, step=5)
+                num_steps = gr.Slider(label="Number of Inference Steps", minimum=10, maximum=250,
+                                      value=NUM_INFERENCE_STEPS, step=5)
             immunize = gr.Checkbox(label='Immunize', value=False)
             b1 = gr.Button('Submit')
         with gr.Column():
-            genimages = gr.Gallery(label="Generated images", show_label=False, elem_id="gallery", columns=2)
+            genimages = gr.Gallery(label="Generated images",
+                                   show_label=False,
+                                   elem_id="gallery").style(grid=[1, 2], height="auto")
             duplicate = gr.HTML("""
                 <p>For faster inference without waiting in queue, you may duplicate the space and upgrade to GPU in settings.
                 <br/>
@@ -223,10 +186,10 @@ with gr.Blocks() as demo:
                 <img style="margin-top: 0em; margin-bottom: 0em" src="https://bit.ly/3gLdBN6" alt="Duplicate Space"></a>
                 <p/>
             """)
-            
-    b1.click(run, [imgmask, prompt, seed, scale, num_steps, immunize], [genimages])
-    examples = gr.Examples(examples=examples_list,inputs = [imgmask, prompt, seed, scale, num_steps, immunize],  outputs=[genimages], cache_examples=False, fn=run)
 
+    b1.click(run, [imgmask, prompt, seed, scale, num_steps, immunize], [genimages])
+    examples = gr.Examples(examples=examples_list, inputs=[imgmask, prompt, seed, scale, num_steps, immunize],
+                           outputs=[genimages], cache_examples=False, fn=run)
 
 # demo.launch()
 demo.launch(server_name='0.0.0.0', share=True, server_port=7860, inline=False)

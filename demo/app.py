@@ -80,37 +80,76 @@ def immunize_fn(init_image, mask_image):
         return adv_image        
 
 def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False):
+    import numpy as np
+    from PIL import Image
+
+    # Normalize various possible `gr.ImageMask` return types into PIL images
+    img_input = image
+    img_arr = None
+    mask_arr = None
+
+    if isinstance(img_input, dict):
+        img_arr = img_input.get('image')
+        mask_arr = img_input.get('mask')
+    elif isinstance(img_input, (list, tuple)):
+        if len(img_input) >= 2:
+            img_arr, mask_arr = img_input[0], img_input[1]
+        elif len(img_input) == 1:
+            img_arr = img_input[0]
+    else:
+        img_arr = img_input
+
+    # Convert image part to PIL
+    if isinstance(img_arr, Image.Image):
+        init_image = img_arr
+    elif isinstance(img_arr, np.ndarray):
+        init_image = Image.fromarray(img_arr)
+    elif img_arr is None:
+        raise ValueError("No image provided to the `run` function.")
+    else:
+        # fallback for other array-like inputs
+        init_image = Image.fromarray(np.array(img_arr))
+
+    # Convert mask part to PIL (provide a default full-white mask if missing)
+    if isinstance(mask_arr, Image.Image):
+        mask_image = mask_arr
+    elif isinstance(mask_arr, np.ndarray):
+        mask_image = Image.fromarray(mask_arr)
+    elif mask_arr is None:
+        mask_image = Image.new("RGB", init_image.size, color=(255, 255, 255))
+    else:
+        mask_image = Image.fromarray(np.array(mask_arr))
+
+    # rest of original logic
     if seed == '':
         seed = DEFAULT_SEED
     else:
         seed = int(seed)
     torch.manual_seed(seed)
 
-    init_image = Image.fromarray(image['image'])
     init_image = resize_and_crop(init_image, (512,512))
-    mask_image = ImageOps.invert(Image.fromarray(image['mask']).convert('RGB'))
+    mask_image = ImageOps.invert(mask_image.convert('RGB'))
     mask_image = resize_and_crop(mask_image, init_image.size)
-    
+
     if immunize:
         immunized_image = immunize_fn(init_image, mask_image)
-        
-    image_edited = pipe_inpaint(prompt=prompt, 
-                         image=init_image if not immunize else immunized_image, 
-                         mask_image=mask_image, 
+
+    image_edited = pipe_inpaint(prompt=prompt,
+                         image=init_image if not immunize else immunized_image,
+                         mask_image=mask_image,
                          height = init_image.size[0],
                          width = init_image.size[1],
                          eta=1,
                          guidance_scale=guidance_scale,
                          num_inference_steps=num_inference_steps,
                         ).images[0]
-        
+
     image_edited = recover_image(image_edited, init_image, mask_image)
-    
+
     if immunize:
         return [(immunized_image, 'Immunized Image'), (image_edited, 'Edited After Immunization')]
     else:
         return [(image_edited, 'Edited Image (Without Immunization)')]
-
 
 description='''<u>Official</u> demo of our paper: <br>
 **Raising the Cost of Malicious AI-Powered Image Editing** <br>

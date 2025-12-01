@@ -176,9 +176,7 @@ with gr.Blocks() as demo:
             immunize = gr.Checkbox(label='Immunize', value=False)
             b1 = gr.Button('Submit')
         with gr.Column():
-            genimages = gr.Gallery(label="Generated images",
-                                   show_label=False,
-                                   elem_id="gallery").style(grid=[1, 2], height="auto")
+            genimages = gr.Gallery(label="Generated images", show_label=False, elem_id="gallery", columns=2)
             duplicate = gr.HTML("""
                 <p>For faster inference without waiting in queue, you may duplicate the space and upgrade to GPU in settings.
                 <br/>

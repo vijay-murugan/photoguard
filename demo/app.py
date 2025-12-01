@@ -83,31 +83,124 @@ def immunize_fn(init_image, mask_image):
         return adv_image
 
 
+# python
 def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False):
+    """
+    Normalizes various Gradio input shapes (dicts with 'image'/'background', lists/tuples,
+    numpy arrays, PIL images) into (init_image: PIL.Image, mask_image: PIL.Image or None).
+    Early-returns an empty list if no usable image is found.
+    """
+    import numpy as np
+    from PIL import Image, ImageOps
+
+    def to_pil(x):
+        if x is None:
+            return None
+        if isinstance(x, Image.Image):
+            return x.convert("RGB")
+        if isinstance(x, np.ndarray):
+            return Image.fromarray(x).convert("RGB")
+        # bytes/bytearray -> try open
+        try:
+            return Image.open(io.BytesIO(x)).convert("RGB")
+        except Exception:
+            pass
+        return None
+
+    def normalize_image_input(inp):
+        # None / empty
+        if inp is None or (isinstance(inp, str) and inp.strip() == ""):
+            return None, None
+
+        # lists/tuples: [image, mask] or (image, mask)
+        if isinstance(inp, (list, tuple)):
+            if len(inp) == 0:
+                return None, None
+            img_cand = inp[0]
+            mask_cand = inp[1] if len(inp) > 1 else None
+            img = normalize_image_input(img_cand)[0]
+            mask = normalize_image_input(mask_cand)[0] if mask_cand is not None else None
+            return img, mask
+
+        # dict-like from Gradio: try common keys
+        if isinstance(inp, dict):
+            # typical keys seen: 'image', 'mask', 'background', 'foreground', 'image_base64'
+            img_keys = ("image", "background", "foreground", "img", "image_base64", "data")
+            mask_keys = ("mask", "mask_base64", "draw2d_mask")
+            img = None
+            mask = None
+            for k in img_keys:
+                if k in inp and inp[k] is not None:
+                    # sometimes nested dicts or arrays
+                    candidate = inp[k]
+                    if isinstance(candidate, (dict, list, tuple)):
+                        img = normalize_image_input(candidate)[0]
+                    else:
+                        img = to_pil(candidate) or normalize_image_input(candidate)[0]
+                    if img is not None:
+                        break
+            for k in mask_keys:
+                if k in inp and inp[k] is not None:
+                    candidate = inp[k]
+                    if isinstance(candidate, (dict, list, tuple)):
+                        mask = normalize_image_input(candidate)[0]
+                    else:
+                        mask = to_pil(candidate) or normalize_image_input(candidate)[0]
+                    if mask is not None:
+                        break
+            return img, mask
+
+        # already PIL or ndarray
+        if isinstance(inp, Image.Image) or isinstance(inp, np.ndarray):
+            return to_pil(inp), None
+
+        # try coercing to numpy array then PIL
+        try:
+            arr = np.array(inp)
+            if arr.size != 0:
+                return Image.fromarray(arr).convert("RGB"), None
+        except Exception:
+            pass
+
+        return None, None
+
+    # Normalize input
+    init_image, mask_image = normalize_image_input(image)
+
+    if init_image is None:
+        # No usable image -> return empty gallery (avoids backend exceptions)
+        print("run(): no usable image found in input")
+        return []
+
+    # If mask missing, create full-white mask
+    if mask_image is None:
+        mask_image = Image.new("RGB", init_image.size, color=(255, 255, 255))
+
+    # seed handling
     if seed == '':
         seed = DEFAULT_SEED
     else:
         seed = int(seed)
     torch.manual_seed(seed)
 
-    print("Image is", image)
-    init_image = Image.fromarray(image['image'])
+    # preprocessing and pipeline
     init_image = resize_and_crop(init_image, (512, 512))
-    mask_image = ImageOps.invert(Image.fromarray(image['mask']).convert('RGB'))
+    mask_image = ImageOps.invert(mask_image.convert('RGB'))
     mask_image = resize_and_crop(mask_image, init_image.size)
 
     if immunize:
         immunized_image = immunize_fn(init_image, mask_image)
 
-    image_edited = pipe_inpaint(prompt=prompt,
-                                image=init_image if not immunize else immunized_image,
-                                mask_image=mask_image,
-                                height=init_image.size[0],
-                                width=init_image.size[1],
-                                eta=1,
-                                guidance_scale=guidance_scale,
-                                num_inference_steps=num_inference_steps,
-                                ).images[0]
+    image_edited = pipe_inpaint(
+        prompt=prompt,
+        image=init_image if not immunize else immunized_image,
+        mask_image=mask_image,
+        height=init_image.size[0],
+        width=init_image.size[1],
+        eta=1,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+    ).images[0]
 
     image_edited = recover_image(image_edited, init_image, mask_image)
 
@@ -115,7 +208,6 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
         return [(immunized_image, 'Immunized Image'), (image_edited, 'Edited After Immunization')]
     else:
         return [(image_edited, 'Edited Image (Without Immunization)')]
-
 
 description = '''<u>Official</u> demo of our paper: <br>
 **Raising the Cost of Malicious AI-Powered Image Editing** <br>

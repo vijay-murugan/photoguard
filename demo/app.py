@@ -79,7 +79,6 @@ def immunize_fn(init_image, mask_image):
         adv_image = recover_image(adv_image, init_image, mask_image, background=True)
         return adv_image        
 
-# python
 def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False):
     import numpy as np
     from PIL import Image
@@ -89,11 +88,10 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
     img_arr = None
     mask_arr = None
 
-    # Early checks for missing/empty input to avoid ValueError tracebacks
-    if img_input is None:
-        raise gr.Error("Please upload an image.")
-    if isinstance(img_input, str) and img_input.strip() == "":
-        raise gr.Error("Please upload an image.")
+    # Early checks for missing/empty input: return empty gallery result instead of raising
+    if img_input is None or (isinstance(img_input, str) and img_input.strip() == ""):
+        print("run(): no image provided")
+        return []  # empty gallery
 
     if isinstance(img_input, dict):
         img_arr = img_input.get('image')
@@ -112,7 +110,8 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
     elif isinstance(img_arr, np.ndarray):
         init_image = Image.fromarray(img_arr)
     elif img_arr is None:
-        raise gr.Error("Please upload an image.")
+        print("run(): image part is None")
+        return []
     else:
         # fallback for other array-like inputs
         init_image = Image.fromarray(np.array(img_arr))

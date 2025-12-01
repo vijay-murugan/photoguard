@@ -79,6 +79,7 @@ def immunize_fn(init_image, mask_image):
         adv_image = recover_image(adv_image, init_image, mask_image, background=True)
         return adv_image        
 
+# python
 def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False):
     import numpy as np
     from PIL import Image
@@ -87,6 +88,12 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
     img_input = image
     img_arr = None
     mask_arr = None
+
+    # Early checks for missing/empty input to avoid ValueError tracebacks
+    if img_input is None:
+        raise gr.Error("Please upload an image.")
+    if isinstance(img_input, str) and img_input.strip() == "":
+        raise gr.Error("Please upload an image.")
 
     if isinstance(img_input, dict):
         img_arr = img_input.get('image')
@@ -105,7 +112,7 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
     elif isinstance(img_arr, np.ndarray):
         init_image = Image.fromarray(img_arr)
     elif img_arr is None:
-        raise ValueError("No image provided to the `run` function.")
+        raise gr.Error("Please upload an image.")
     else:
         # fallback for other array-like inputs
         init_image = Image.fromarray(np.array(img_arr))
@@ -150,7 +157,6 @@ def run(image, prompt, seed, guidance_scale, num_inference_steps, immunize=False
         return [(immunized_image, 'Immunized Image'), (image_edited, 'Edited After Immunization')]
     else:
         return [(image_edited, 'Edited Image (Without Immunization)')]
-
 description='''<u>Official</u> demo of our paper: <br>
 **Raising the Cost of Malicious AI-Powered Image Editing** <br>
 *[Hadi Salman](https://twitter.com/hadisalmanX), [Alaa Khaddaj](https://twitter.com/Alaa_Khaddaj), [Guillaume Leclerc](https://twitter.com/gpoleclerc), [Andrew Ilyas](https://twitter.com/andrew_ilyas), [Aleksander Madry](https://twitter.com/aleks_madry)* <br>
